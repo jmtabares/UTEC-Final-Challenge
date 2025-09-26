@@ -69,41 +69,34 @@ pipeline {
           rm -rf ${OUT_DIR}
           mkdir -p ${OUT_DIR}
           
-          # Create a Docker volume for sharing files
-          docker volume create jmeter-vol-\${BUILD_NUMBER} || true
-          
-          # Copy files to the Docker volume using a temporary container
-          docker run --rm \
-            -v jmeter-vol-\${BUILD_NUMBER}:/work/jmeter \
-            -v "\$PWD/jmeter:/source:ro" \
-            alpine:latest \
-            cp -r /source/* /work/jmeter/
-          
-          # Verify files are in the volume
-          echo "=== DEBUG: Volume contents ==="
-          docker run --rm \
-            -v jmeter-vol-\${BUILD_NUMBER}:/work/jmeter:ro \
-            alpine:latest \
-            ls -la /work/jmeter/
-          
           # Clean previous ephemeral container if any
           docker rm -f ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
 
-          # Run JMeter with the Docker volume
-          docker run --rm \
+          # Create JMeter container without starting it
+          docker create \
             --name ${JMETER_CONTAINER_NAME} \
             --network=${DOCKER_NETWORK} \
             -p ${JMETER_PROM_PORT}:${JMETER_PROM_PORT} \
-            -v jmeter-vol-\${BUILD_NUMBER}:/work/jmeter:ro \
             -v "\$PWD/${OUT_DIR}:/work/out" \
             ${JMETER_IMAGE} -n \
               -t /work/jmeter/test-plan.jmx \
               -Jhost=${AUT_HOST} -Jport=${AUT_PORT} \
               -l /work/out/results.jtl \
+              -f \
               -e -o /work/out/report
           
-          # Cleanup Docker volume
-          docker volume rm jmeter-vol-\${BUILD_NUMBER} || true
+          # Copy JMeter files into the container
+          docker cp jmeter/. ${JMETER_CONTAINER_NAME}:/work/jmeter/
+          
+          # Verify files are copied
+          echo "=== DEBUG: Container JMeter directory contents ==="
+          docker exec ${JMETER_CONTAINER_NAME} ls -la /work/jmeter/ || echo "Could not list files"
+          
+          # Start the container and wait for it to complete
+          docker start -a ${JMETER_CONTAINER_NAME}
+          
+          # Remove the container
+          docker rm ${JMETER_CONTAINER_NAME} || true
         """
       }
     }
