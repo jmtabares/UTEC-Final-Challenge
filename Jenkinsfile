@@ -62,11 +62,10 @@ pipeline {
           # Clean previous container if any
           docker rm -f ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
 
-          # Run JMeter tests with HTML report generation
-          docker run --rm \
+          # Create JMeter container without starting it (fixes Docker-in-Docker volume issues)
+          docker create \
             --name ${JMETER_CONTAINER_NAME} \
             --network=${DOCKER_NETWORK} \
-            -v "\$PWD/jmeter:/work/jmeter:ro" \
             -v "\$PWD/${OUT_DIR}:/work/out" \
             ${JMETER_IMAGE} -n \
               -t /work/jmeter/test-plan-enhanced.jmx \
@@ -76,7 +75,31 @@ pipeline {
               -Jjmeter.save.saveservice.response_data=true \
               -Jjmeter.save.saveservice.samplerData=true \
               -Jjmeter.save.saveservice.responseHeaders=true
+          
+          # Copy JMeter files into the container (avoids volume mount issues)
+          docker cp jmeter/. ${JMETER_CONTAINER_NAME}:/work/jmeter/
+          
+          # Verify files are copied
+          echo "=== DEBUG: Container JMeter directory contents ==="
+          docker exec ${JMETER_CONTAINER_NAME} ls -la /work/jmeter/ || echo "Could not list files"
+          
+          # Start the container and wait for it to complete
+          set +e  # Don't fail immediately on error
+          docker start -a ${JMETER_CONTAINER_NAME}
+          JMETER_EXIT_CODE=\$?
+          set -e  # Re-enable immediate failure
+          
+          echo "=== JMeter container exit code: \$JMETER_EXIT_CODE ==="
 
+          # Check container logs if it failed
+          if [ \$JMETER_EXIT_CODE -ne 0 ]; then
+            echo "=== JMeter container logs ==="
+            docker logs ${JMETER_CONTAINER_NAME} || true
+          fi
+          
+          # Remove the container
+          docker rm ${JMETER_CONTAINER_NAME} || true
+          
           # Verify results were generated
           if [ -f "${OUT_DIR}/results.jtl" ]; then
             echo "=== JMeter Test Results Generated Successfully ==="
@@ -87,6 +110,9 @@ pipeline {
             echo "ERROR: No results.jtl file generated"
             exit 1
           fi
+          
+          # Exit with JMeter's exit code
+          exit \$JMETER_EXIT_CODE
         """
       }
     }
