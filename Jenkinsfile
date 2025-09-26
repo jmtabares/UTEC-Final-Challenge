@@ -67,26 +67,14 @@ pipeline {
         sh """
           mkdir -p ${OUT_DIR}
           
-          # Create a temporary directory that Docker can access
-          TEMP_DIR="/tmp/jmeter-\${BUILD_NUMBER}"
-          mkdir -p "\${TEMP_DIR}"
-          
-          # Copy JMeter files to temp directory
-          cp -r jmeter/* "\${TEMP_DIR}/"
-          
-          # Verify files are copied
-          echo "=== DEBUG: Temp directory contents ==="
-          ls -la "\${TEMP_DIR}/"
-          
           # Clean previous ephemeral container if any
           docker rm -f ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
 
-          # Run JMeter with temp directory mount
-          docker run --rm \
+          # Create JMeter container without running it yet
+          docker create \
             --name ${JMETER_CONTAINER_NAME} \
             --network=${DOCKER_NETWORK} \
             -p ${JMETER_PROM_PORT}:${JMETER_PROM_PORT} \
-            -v "\${TEMP_DIR}:/work/jmeter:ro" \
             -v "\$PWD/${OUT_DIR}:/work/out" \
             ${JMETER_IMAGE} -n \
               -t /work/jmeter/test-plan.jmx \
@@ -94,11 +82,21 @@ pipeline {
               -l /work/out/results.jtl \
               -e -o /work/out/report
           
-          # Cleanup temp directory
-          rm -rf "\${TEMP_DIR}"
+          # Copy JMeter files into the container
+          docker cp jmeter/. ${JMETER_CONTAINER_NAME}:/work/jmeter/
+          
+          # Verify files are copied
+          echo "=== DEBUG: Container contents ==="
+          docker exec ${JMETER_CONTAINER_NAME} ls -la /work/jmeter/
+          
+          # Start the container
+          docker start -a ${JMETER_CONTAINER_NAME}
+          
+          # Remove the container
+          docker rm ${JMETER_CONTAINER_NAME} || true
         """
+      }
     }
-  }
 
     stage('Archive') {
       steps {
