@@ -65,16 +65,36 @@ pipeline {
     stage('Run JMeter (docker) with Prometheus listener') {
       steps {
         sh """
+          # Clean and recreate output directory
+          rm -rf ${OUT_DIR}
           mkdir -p ${OUT_DIR}
+          
+          # Create a Docker volume for sharing files
+          docker volume create jmeter-vol-\${BUILD_NUMBER} || true
+          
+          # Copy files to the Docker volume using a temporary container
+          docker run --rm \
+            -v jmeter-vol-\${BUILD_NUMBER}:/work/jmeter \
+            -v "\$PWD/jmeter:/source:ro" \
+            alpine:latest \
+            cp -r /source/* /work/jmeter/
+          
+          # Verify files are in the volume
+          echo "=== DEBUG: Volume contents ==="
+          docker run --rm \
+            -v jmeter-vol-\${BUILD_NUMBER}:/work/jmeter:ro \
+            alpine:latest \
+            ls -la /work/jmeter/
           
           # Clean previous ephemeral container if any
           docker rm -f ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
 
-          # Create JMeter container without running it yet
-          docker create \
+          # Run JMeter with the Docker volume
+          docker run --rm \
             --name ${JMETER_CONTAINER_NAME} \
             --network=${DOCKER_NETWORK} \
             -p ${JMETER_PROM_PORT}:${JMETER_PROM_PORT} \
+            -v jmeter-vol-\${BUILD_NUMBER}:/work/jmeter:ro \
             -v "\$PWD/${OUT_DIR}:/work/out" \
             ${JMETER_IMAGE} -n \
               -t /work/jmeter/test-plan.jmx \
@@ -82,18 +102,8 @@ pipeline {
               -l /work/out/results.jtl \
               -e -o /work/out/report
           
-          # Copy JMeter files into the container
-          docker cp jmeter/. ${JMETER_CONTAINER_NAME}:/work/jmeter/
-          
-          # Verify files are copied
-          echo "=== DEBUG: Container contents ==="
-          docker exec ${JMETER_CONTAINER_NAME} ls -la /work/jmeter/
-          
-          # Start the container
-          docker start -a ${JMETER_CONTAINER_NAME}
-          
-          # Remove the container
-          docker rm ${JMETER_CONTAINER_NAME} || true
+          # Cleanup Docker volume
+          docker volume rm jmeter-vol-\${BUILD_NUMBER} || true
         """
       }
     }
