@@ -93,17 +93,52 @@ pipeline {
           docker exec ${JMETER_CONTAINER_NAME} ls -la /work/jmeter/ || echo "Could not list files"
           
           # Start the container and wait for it to complete
+          set +e  # Don't fail immediately on error
           docker start -a ${JMETER_CONTAINER_NAME}
+          JMETER_EXIT_CODE=\$?
+          set -e  # Re-enable immediate failure
+          
+          echo "=== JMeter container exit code: \$JMETER_EXIT_CODE ==="
+          
+          # Check container logs if it failed
+          if [ \$JMETER_EXIT_CODE -ne 0 ]; then
+            echo "=== JMeter container logs ==="
+            docker logs ${JMETER_CONTAINER_NAME} || true
+          fi
+          
+          # Check what was generated
+          echo "=== DEBUG: Output directory contents ==="
+          ls -la ${OUT_DIR}/ || echo "Output directory is empty or doesn't exist"
+          
+          # Check if results file was created
+          if [ -f "${OUT_DIR}/results.jtl" ]; then
+            echo "=== JMeter results file found ==="
+            head -10 ${OUT_DIR}/results.jtl || true
+          else
+            echo "=== No results.jtl file found ==="
+          fi
           
           # Remove the container
           docker rm ${JMETER_CONTAINER_NAME} || true
+          
+          # Exit with JMeter's exit code
+          exit \$JMETER_EXIT_CODE
         """
       }
     }
 
     stage('Archive') {
       steps {
-        archiveArtifacts artifacts: "${OUT_DIR}/**", fingerprint: true
+        script {
+          // Check if there are files to archive
+          def outFiles = sh(script: "ls ${OUT_DIR}/ 2>/dev/null | wc -l", returnStdout: true).trim()
+          if (outFiles.toInteger() > 0) {
+            echo "Found ${outFiles} files to archive"
+            archiveArtifacts artifacts: "${OUT_DIR}/**", fingerprint: true
+          } else {
+            echo "No output files found to archive"
+          }
+        }
       }
     }
   }
