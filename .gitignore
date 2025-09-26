@@ -33,3 +33,4 @@ Thumbs.db
 # Build outputs
 build/
 dist/
+reports/

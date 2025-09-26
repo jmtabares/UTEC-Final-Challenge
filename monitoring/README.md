@@ -6,6 +6,7 @@ This directory contains a pre-configured Grafana dashboard for monitoring API pe
 
 The dashboard includes the following panels:
 
+### Application Performance Metrics
 1. **API Request Rate by Endpoint** - Shows requests per second for each API endpoint
 2. **95th Percentile Response Time** - Displays response time percentiles by route
 3. **Error Rate** - Overall error percentage across all requests (4xx, 5xx status codes)
@@ -14,6 +15,13 @@ The dashboard includes the following panels:
 6. **HTTP Error Responses** - Detailed view of 4xx and 5xx errors by endpoint
 7. **Request Success Rate** - Percentage of successful (2xx) requests
 8. **Total Requests per Minute** - Total request volume
+
+### Node.js System Monitoring
+9. **Node.js CPU Usage** - User and system CPU utilization percentages
+10. **Node.js Memory Usage** - Resident memory, heap usage, and external memory
+11. **Node.js System Metrics** - Heap usage ratio, active connections, event loop lag
+12. **Garbage Collection Activity** - GC frequency and time spent in garbage collection
+13. **Event Loop Lag Distribution** - Heatmap showing event loop performance
 
 *Note: JMeter Active Threads panel requires the Prometheus listener plugin to be properly installed.
 
@@ -40,6 +48,21 @@ The dashboard includes the following panels:
 - `http_request_duration_ms_count` - Request counter with labels: method, route, status_code
 - `http_request_duration_ms_bucket` - Request duration histogram buckets
 
+### Node.js System Metrics (automatically collected)
+- `process_cpu_user_seconds_total` - User CPU time spent by the process
+- `process_cpu_system_seconds_total` - System CPU time spent by the process
+- `process_resident_memory_bytes` - Resident memory size in bytes
+- `nodejs_heap_size_used_bytes` - Heap memory currently used
+- `nodejs_heap_size_total_bytes` - Total heap memory allocated
+- `nodejs_external_memory_bytes` - External memory used by Node.js
+- `nodejs_gc_duration_seconds` - Garbage collection duration statistics
+- `nodejs_eventloop_lag_seconds` - Event loop lag measurements
+
+### Custom Application Metrics
+- `nodejs_heap_usage_ratio` - Heap usage as a ratio of heap limit
+- `nodejs_active_connections_total` - Number of active HTTP connections
+- `nodejs_eventloop_lag_seconds` - Event loop lag histogram
+
 ### JMeter Metrics (when Prometheus listener is configured)
 - `jmeter_threads` - Active thread count
 - `jmeter_sample_duration_ms` - Sample response times
@@ -47,6 +70,7 @@ The dashboard includes the following panels:
 
 ## PromQL Queries Used
 
+### Application Performance Queries
 ```promql
 # API Request Rate
 sum(rate(http_request_duration_ms_count[5m])) by (route)
@@ -56,6 +80,31 @@ histogram_quantile(0.95, sum(rate(http_request_duration_ms_bucket[5m])) by (le, 
 
 # Error Rate
 sum(rate(http_request_duration_ms_count{status_code!~"2.."}[1m])) / sum(rate(http_request_duration_ms_count[1m]))
+```
+
+### Node.js System Monitoring Queries
+```promql
+# CPU Usage (User + System)
+rate(process_cpu_user_seconds_total[1m]) * 100
+rate(process_cpu_system_seconds_total[1m]) * 100
+
+# Memory Usage
+process_resident_memory_bytes / 1024 / 1024  # Resident Memory (MB)
+nodejs_heap_size_used_bytes / 1024 / 1024    # Heap Used (MB)
+nodejs_heap_size_total_bytes / 1024 / 1024   # Heap Total (MB)
+
+# Heap Usage Ratio
+nodejs_heap_usage_ratio * 100
+
+# Active Connections
+nodejs_active_connections_total
+
+# Event Loop Lag
+nodejs_eventloop_lag_seconds * 1000  # Convert to milliseconds
+
+# Garbage Collection Activity
+rate(nodejs_gc_duration_seconds_count[1m])        # GC Frequency
+rate(nodejs_gc_duration_seconds_sum[1m]) * 1000   # GC Time (ms/sec)
 ```
 
 ## Dashboard Configuration

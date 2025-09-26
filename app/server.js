@@ -9,7 +9,15 @@ const SECRET = "dev-secret";
 
 // Prometheus metrics
 const register = new client.Registry();
-client.collectDefaultMetrics({ register });
+
+// Collect default Node.js metrics (CPU, memory, event loop, etc.)
+client.collectDefaultMetrics({
+  register,
+  timeout: 5000,
+  gcDurationBuckets: [0.001, 0.01, 0.1, 1, 2, 5] // GC duration buckets
+});
+
+// Custom HTTP duration histogram
 const httpDuration = new client.Histogram({
   name: "http_request_duration_ms",
   help: "Duration of HTTP requests in ms",
@@ -18,13 +26,57 @@ const httpDuration = new client.Histogram({
 });
 register.registerMetric(httpDuration);
 
+// Custom application metrics
+const activeConnections = new client.Gauge({
+  name: "nodejs_active_connections_total",
+  help: "Total number of active connections"
+});
+register.registerMetric(activeConnections);
+
+const heapUsageGauge = new client.Gauge({
+  name: "nodejs_heap_usage_ratio",
+  help: "Heap usage as a ratio of heap limit",
+  collect() {
+    const memUsage = process.memoryUsage();
+    this.set(memUsage.heapUsed / memUsage.heapTotal);
+  }
+});
+register.registerMetric(heapUsageGauge);
+
+const eventLoopLag = new client.Histogram({
+  name: "nodejs_eventloop_lag_seconds",
+  help: "Event loop lag in seconds",
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1]
+});
+register.registerMetric(eventLoopLag);
+
+// Event loop lag measurement
+let start = process.hrtime.bigint();
+setInterval(() => {
+  const delta = process.hrtime.bigint() - start;
+  const nanosec = Number(delta);
+  const seconds = nanosec / 1e9;
+  eventLoopLag.observe(seconds);
+  start = process.hrtime.bigint();
+}, 1000);
+
 // timing middleware
 app.use(async (req, res, next) => {
   const start = Date.now();
+
+  // Track active connections
+  activeConnections.inc();
+
   res.on("finish", () => {
     const dur = Date.now() - start;
     httpDuration.labels(req.method, req.route?.path || req.path, res.statusCode).observe(dur);
+    activeConnections.dec();
   });
+
+  res.on("close", () => {
+    activeConnections.dec();
+  });
+
   next();
 });
 
