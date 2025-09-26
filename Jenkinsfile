@@ -41,13 +41,54 @@ pipeline {
       }
     }
 
+    // stage('Run JMeter (docker) with Prometheus listener') {
+    //   steps {
+    //     sh """
+    //       mkdir -p ${OUT_DIR}
+    //       # Clean previous ephemeral container if any
+    //       docker rm -f ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
+
+    //       docker run --rm \
+    //         --name ${JMETER_CONTAINER_NAME} \
+    //         --network=${DOCKER_NETWORK} \
+    //         -p ${JMETER_PROM_PORT}:${JMETER_PROM_PORT} \
+    //         -v "\$PWD/jmeter:/work/jmeter:ro" \
+    //         -v "\$PWD/${OUT_DIR}:/work/out" \
+    //         ${JMETER_IMAGE} -n \
+    //           -t /work/jmeter/test-plan.jmx \
+    //           -Jhost=${AUT_HOST} -Jport=${AUT_PORT} \
+    //           -l /work/out/results.jtl \
+    //           -e -o /work/out/report
+    //     """
+    //   }
+    // }
     stage('Run JMeter (docker) with Prometheus listener') {
       steps {
         sh """
           mkdir -p ${OUT_DIR}
+          
+          # Debug: Check if files exist before mounting
+          echo "=== DEBUG: Current directory ==="
+          pwd
+          echo "=== DEBUG: Workspace contents ==="
+          ls -la
+          echo "=== DEBUG: JMeter directory contents ==="
+          ls -la jmeter/ || echo "jmeter directory not found"
+          echo "=== DEBUG: test-plan.jmx file check ==="
+          ls -la jmeter/test-plan.jmx || echo "test-plan.jmx not found"
+          
           # Clean previous ephemeral container if any
           docker rm -f ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
 
+          # Debug: Test the mount first
+          echo "=== DEBUG: Testing Docker mount ==="
+          docker run --rm \
+            --network=${DOCKER_NETWORK} \
+            -v "\$PWD/jmeter:/work/jmeter:ro" \
+            alpine:latest \
+            ls -la /work/jmeter/
+
+          # Run JMeter
           docker run --rm \
             --name ${JMETER_CONTAINER_NAME} \
             --network=${DOCKER_NETWORK} \

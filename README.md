@@ -167,6 +167,8 @@ open http://localhost:8080
    - Performance Plugin (for JMeter integration)
    - Docker Pipeline Plugin (for our Docker-based pipeline)
    - HTML Publisher (for JMeter HTML reports)
+   -  AnsiColor Plugin
+
 
 **Why These Plugins:**
 - **Pipeline**: Enables our `Jenkinsfile` to work
