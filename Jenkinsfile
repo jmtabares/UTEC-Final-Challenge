@@ -1,3 +1,16 @@
+/*
+ * Performance Testing Pipeline with Jenkins Performance Plugin Integration
+ * 
+ * Required Jenkins Plugins:
+ * - Performance Plugin: For JMeter result analysis and trending
+ * - HTML Publisher Plugin: For HTML report publishing
+ * 
+ * To install Performance Plugin:
+ * 1. Go to Jenkins → Manage Jenkins → Manage Plugins
+ * 2. Search for "Performance Plugin" in Available tab
+ * 3. Install and restart Jenkins
+ */
+
 pipeline {
   agent any
 
@@ -62,45 +75,81 @@ pipeline {
           # Clean previous container if any
           docker rm -f ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
 
-          # Create JMeter container without starting it (fixes Docker-in-Docker volume issues)
-          docker create \
+          # Create a simple JMeter container and start it in background
+          # Override entrypoint to use shell and keep container alive
+          docker run -d \
             --name ${JMETER_CONTAINER_NAME} \
             --network=${DOCKER_NETWORK} \
-            -v "\$PWD/${OUT_DIR}:/work/out" \
-            ${JMETER_IMAGE} -n \
-              -t /work/jmeter/test-plan-enhanced.jmx \
-              -l /work/out/results.jtl \
-              -e -o /work/out/jmeter-report \
-              -Jjmeter.save.saveservice.output_format=xml \
-              -Jjmeter.save.saveservice.response_data=true \
-              -Jjmeter.save.saveservice.samplerData=true \
-              -Jjmeter.save.saveservice.responseHeaders=true
+            --memory=1g \
+            --memory-swap=2g \
+            --shm-size=256m \
+            --entrypoint="" \
+            ${JMETER_IMAGE} sleep 3600
+          
+          # Create directory structure in the running container
+          docker exec ${JMETER_CONTAINER_NAME} mkdir -p /work/jmeter /work/out
           
           # Copy JMeter files into the container (avoids volume mount issues)
           docker cp jmeter/. ${JMETER_CONTAINER_NAME}:/work/jmeter/
+          
+          # Clean any existing results in the container's output directory
+          docker exec ${JMETER_CONTAINER_NAME} rm -f /work/out/results.jtl || true
+          docker exec ${JMETER_CONTAINER_NAME} rm -rf /work/out/jmeter-report || true
           
           # Verify files are copied
           echo "=== DEBUG: Container JMeter directory contents ==="
           docker exec ${JMETER_CONTAINER_NAME} ls -la /work/jmeter/ || echo "Could not list files"
           
-          # Start the container and wait for it to complete
+          # Execute JMeter inside the running container
           set +e  # Don't fail immediately on error
-          docker start -a ${JMETER_CONTAINER_NAME}
+          echo "=== Running JMeter tests with 5-minute timeout ==="
+          timeout 300 docker exec ${JMETER_CONTAINER_NAME} jmeter -n \
+            -t /work/jmeter/test-plan.jmx \
+            -l /work/out/results.jtl \
+            -e -o /work/out/jmeter-report \
+            -f \
+            -Jjmeter.save.saveservice.output_format=csv \
+            -Jjmeter.save.saveservice.response_data=false \
+            -Jjmeter.save.saveservice.samplerData=false \
+            -Jjmeter.save.saveservice.responseHeaders=false
           JMETER_EXIT_CODE=\$?
           set -e  # Re-enable immediate failure
           
-          echo "=== JMeter container exit code: \$JMETER_EXIT_CODE ==="
-
-          # Check container logs if it failed
-          if [ \$JMETER_EXIT_CODE -ne 0 ]; then
-            echo "=== JMeter container logs ==="
-            docker logs ${JMETER_CONTAINER_NAME} || true
+          if [ \$JMETER_EXIT_CODE -eq 124 ]; then
+            echo "=== JMeter test timed out after 5 minutes ==="
+            docker kill ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
           fi
           
-          # Remove the container
-          docker rm ${JMETER_CONTAINER_NAME} || true
+          echo "=== JMeter container exit code: \$JMETER_EXIT_CODE ==="
+
+          # Check container status
+          CONTAINER_STATUS=\$(docker inspect ${JMETER_CONTAINER_NAME} --format='{{.State.Status}}' 2>/dev/null || echo "not-found")
+          echo "=== Container status: \$CONTAINER_STATUS ==="
+          
+          # Try to get logs before container might be removed
+          if [ "\$CONTAINER_STATUS" != "not-found" ]; then
+            echo "=== JMeter container logs ==="
+            docker logs ${JMETER_CONTAINER_NAME} 2>/dev/null || echo "Could not retrieve logs"
+            
+            # Check what was generated in the container (if still exists)
+            echo "=== DEBUG: Container output directory contents ==="
+            docker exec ${JMETER_CONTAINER_NAME} ls -la /work/out/ 2>/dev/null || echo "No output directory in container or container not accessible"
+            
+            # Copy results back from container to Jenkins workspace
+            echo "=== Copying results from container to workspace ==="
+            docker cp ${JMETER_CONTAINER_NAME}:/work/out/. ${OUT_DIR}/ 2>/dev/null || echo "Could not copy results from container"
+            
+            # Stop and remove the container
+            docker stop ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
+            docker rm ${JMETER_CONTAINER_NAME} >/dev/null 2>&1 || true
+          else
+            echo "=== Container not found - may have been auto-removed ==="
+          fi
           
           # Verify results were generated
+          echo "=== DEBUG: Final workspace output directory contents ==="
+          ls -la ${OUT_DIR}/
+          
           if [ -f "${OUT_DIR}/results.jtl" ]; then
             echo "=== JMeter Test Results Generated Successfully ==="
             echo "Total lines in results: \$(wc -l < ${OUT_DIR}/results.jtl)"
@@ -155,8 +204,8 @@ EOF
             TOTAL_REQUESTS=\$(tail -n +2 "${OUT_DIR}/results.jtl" | wc -l)
             SUCCESS_REQUESTS=\$(tail -n +2 "${OUT_DIR}/results.jtl" | awk -F',' '\$8=="true"' | wc -l)
             ERROR_REQUESTS=\$(tail -n +2 "${OUT_DIR}/results.jtl" | awk -F',' '\$8=="false"' | wc -l)
-            SUCCESS_RATE=\$(echo "scale=1; \$SUCCESS_REQUESTS * 100 / \$TOTAL_REQUESTS" | bc)
-            ERROR_RATE=\$(echo "scale=1; \$ERROR_REQUESTS * 100 / \$TOTAL_REQUESTS" | bc)
+            SUCCESS_RATE=\$(echo "\$SUCCESS_REQUESTS \$TOTAL_REQUESTS" | awk '{printf "%.1f", \$1 * 100 / \$2}')
+            ERROR_RATE=\$(echo "\$ERROR_REQUESTS \$TOTAL_REQUESTS" | awk '{printf "%.1f", \$1 * 100 / \$2}')
 
             # Get response time statistics (in milliseconds, column 2)
             AVG_RESPONSE=\$(tail -n +2 "${OUT_DIR}/results.jtl" | awk -F',' '{sum+=\$2; count++} END {if(count>0) print int(sum/count); else print 0}')
@@ -166,8 +215,8 @@ EOF
             # Calculate test duration
             START_TIME=\$(tail -n +2 "${OUT_DIR}/results.jtl" | head -1 | awk -F',' '{print \$1}')
             END_TIME=\$(tail -n +2 "${OUT_DIR}/results.jtl" | tail -1 | awk -F',' '{print \$1}')
-            DURATION=\$(echo "scale=1; (\$END_TIME - \$START_TIME) / 1000" | bc)
-            THROUGHPUT=\$(echo "scale=2; \$TOTAL_REQUESTS / \$DURATION" | bc)
+            DURATION=\$(echo "\$END_TIME \$START_TIME" | awk '{printf "%.1f", (\$1 - \$2) / 1000}')
+            THROUGHPUT=\$(echo "\$TOTAL_REQUESTS \$DURATION" | awk '{printf "%.2f", \$1 / \$2}')
 
             cat >> ${REPORTS_DIR}/generated/performance_summary.html << EOF
     <div class="metrics">
@@ -262,6 +311,30 @@ EOF
           if (fileExists("${OUT_DIR}/results.jtl")) {
             archiveArtifacts artifacts: "${OUT_DIR}/**", fingerprint: true
             echo "✅ JMeter results and HTML reports archived"
+            
+            // Performance Plugin - Parse JTL files for trending and analysis
+            try {
+              perfReport(
+                sourceDataFiles: "${OUT_DIR}/results.jtl",
+                modeOfThreshold: true,
+                configType: 'ART',
+                modePerformancePerTestCase: true,
+                compareBuildPrevious: true,
+                modeThroughput: true,
+                nthBuildNumber: 0,
+                errorFailedThreshold: 5,
+                errorUnstableThreshold: 10,
+                relativeFailedThresholdPositive: 20,
+                relativeFailedThresholdNegative: 0,
+                relativeUnstableThresholdPositive: 50,
+                relativeUnstableThresholdNegative: 0,
+                modeEvaluation: true
+              )
+              echo "✅ Performance trends and analysis configured"
+            } catch (Exception e) {
+              echo "⚠️ Performance Plugin not available: ${e.message}"
+              echo "📝 Install Performance Plugin in Jenkins: Manage Jenkins → Manage Plugins → Search 'Performance'"
+            }
           }
 
           // Archive generated reports
@@ -304,26 +377,59 @@ EOF
             def results = sh(script: "tail -n +2 ${OUT_DIR}/results.jtl | wc -l", returnStdout: true).trim().toInteger()
             def errors = sh(script: "tail -n +2 ${OUT_DIR}/results.jtl | awk -F',' '\$8==\"false\"' | wc -l", returnStdout: true).trim().toInteger()
             def successRate = ((results - errors) * 100) / results
+            
+            // Calculate average response time
+            def avgResponse = sh(script: "tail -n +2 ${OUT_DIR}/results.jtl | awk -F',' '{sum+=\$2; count++} END {if(count>0) print int(sum/count); else print 0}'", returnStdout: true).trim().toInteger()
+            
+            // Calculate max response time
+            def maxResponse = sh(script: "tail -n +2 ${OUT_DIR}/results.jtl | awk -F',' '{if(\$2>max) max=\$2} END {print int(max)}'", returnStdout: true).trim().toInteger()
 
             echo "📊 Performance Test Results:"
             echo "   Total Requests: ${results}"
             echo "   Errors: ${errors}"
-            echo "   Success Rate: ${successRate.round(1)}%"
+            echo "   Success Rate: ${Math.round(successRate * 10) / 10}%"
+            echo "   Average Response Time: ${avgResponse}ms"
+            echo "   Max Response Time: ${maxResponse}ms"
 
-            // Set build status based on results
-            if (successRate >= 95) {
-              currentBuild.result = 'SUCCESS'
-              echo "✅ Performance test PASSED - Success rate: ${successRate.round(1)}%"
-            } else if (successRate >= 80) {
-              currentBuild.result = 'UNSTABLE'
-              echo "⚠️  Performance test UNSTABLE - Success rate: ${successRate.round(1)}%"
-            } else {
-              currentBuild.result = 'FAILURE'
-              echo "❌ Performance test FAILED - Success rate: ${successRate.round(1)}%"
+            // Performance thresholds analysis
+            def performanceIssues = []
+            
+            if (successRate < 95) {
+              performanceIssues.add("⚠️ Success rate below 95%")
+            }
+            
+            if (avgResponse > 1000) {
+              performanceIssues.add("⚠️ Average response time above 1000ms")
+            }
+            
+            if (maxResponse > 5000) {
+              performanceIssues.add("⚠️ Max response time above 5000ms")
+            }
+            
+            if (performanceIssues.size() > 0) {
+              echo "🚨 Performance Issues Detected:"
+              performanceIssues.each { issue ->
+                echo "   ${issue}"
+              }
             }
 
-            // Add build description
-            currentBuild.description = "Success: ${successRate.round(1)}% | Requests: ${results} | Errors: ${errors}"
+            // Set build status based on comprehensive analysis
+            if (successRate >= 95 && avgResponse <= 1000) {
+              currentBuild.result = 'SUCCESS'
+              echo "✅ Performance test PASSED - All thresholds met"
+            } else if (successRate >= 90 && avgResponse <= 2000) {
+              currentBuild.result = 'UNSTABLE'
+              echo "⚠️  Performance test UNSTABLE - Some thresholds exceeded"
+            } else {
+              currentBuild.result = 'FAILURE'
+              echo "❌ Performance test FAILED - Critical thresholds exceeded"
+            }
+
+            // Enhanced build description with more metrics
+            currentBuild.description = "Success: ${Math.round(successRate * 10) / 10}% | Avg: ${avgResponse}ms | Max: ${maxResponse}ms | Requests: ${results}"
+            
+            echo "📈 Performance Plugin will provide detailed trends and comparisons"
+            echo "📊 Check 'Performance Trend' graph in project dashboard"
           }
         }
       }

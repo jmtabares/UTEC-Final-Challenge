@@ -10,6 +10,9 @@ const SECRET = "dev-secret";
 // Prometheus metrics
 const register = new client.Registry();
 
+// Clear any existing metrics to avoid conflicts
+register.clear();
+
 // Collect default Node.js metrics (CPU, memory, event loop, etc.)
 client.collectDefaultMetrics({
   register,
@@ -43,22 +46,7 @@ const heapUsageGauge = new client.Gauge({
 });
 register.registerMetric(heapUsageGauge);
 
-const eventLoopLag = new client.Histogram({
-  name: "nodejs_eventloop_lag_seconds",
-  help: "Event loop lag in seconds",
-  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1]
-});
-register.registerMetric(eventLoopLag);
-
-// Event loop lag measurement
-let start = process.hrtime.bigint();
-setInterval(() => {
-  const delta = process.hrtime.bigint() - start;
-  const nanosec = Number(delta);
-  const seconds = nanosec / 1e9;
-  eventLoopLag.observe(seconds);
-  start = process.hrtime.bigint();
-}, 1000);
+// Note: nodejs_eventloop_lag_seconds is already provided by collectDefaultMetrics
 
 // timing middleware
 app.use(async (req, res, next) => {
